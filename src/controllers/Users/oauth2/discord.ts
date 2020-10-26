@@ -16,9 +16,49 @@ import {
   generateRefreshToken
 } from '../../../utils/config/jwtToken'
 import { ForbiddenError } from '../../../utils/errors/ForbiddenError'
+import { buildQueryURL } from '../utils/buildQueryURL'
 import { isValidRedirectURIValidation } from '../utils/isValidRedirectURIValidation'
 
-const provider = 'discord'
+const PROVIDER = 'discord'
+const DISCORD_BASE_URL = 'https://discordapp.com/api/v6'
+
+const getUserDiscordData = async (
+  code: string,
+  redirectURI: string
+): Promise<{
+  id: string
+  username: string
+  discriminator: string
+}> => {
+  const { data: dataTokens } = await axios.post<{
+    access_token: string
+    token_type: string
+    expires_in: number
+    refresh_token: string
+    scope: 'identify'
+  }>(
+    `${DISCORD_BASE_URL}/oauth2/token`,
+    querystring.stringify({
+      client_id: process.env.DISCORD_CLIENT_ID,
+      client_secret: process.env.DISCORD_CLIENT_SECRET,
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectURI,
+      scope: 'identify'
+    }),
+    {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    }
+  )
+  const { data: dataUser } = await axios.get(`${DISCORD_BASE_URL}/users/@me`, {
+    headers: {
+      Authorization: `${dataTokens.token_type} ${dataTokens.access_token}`
+    }
+  })
+  return dataUser
+}
 
 const discordRouter = Router()
 
@@ -38,7 +78,7 @@ discordRouter.get(
     }
     const { redirectURI } = req.query as { redirectURI: string }
     const redirectCallback = `${process.env.API_BASE_URL}/users/oauth2/discord/callback-add-strategy?redirectURI=${redirectURI}`
-    const url = `https://discordapp.com/api/v6/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&scope=identify&response_type=code&state=${req.user.accessToken}&redirect_uri=${redirectCallback}`
+    const url = `${DISCORD_BASE_URL}/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&scope=identify&response_type=code&state=${req.user.accessToken}&redirect_uri=${redirectCallback}`
     return res.json(url)
   }
 )
@@ -46,6 +86,7 @@ discordRouter.get(
 discordRouter.get(
   '/callback-add-strategy',
   [
+    query('code').notEmpty(),
     query('redirectURI')
       .notEmpty()
       .trim()
@@ -62,43 +103,14 @@ discordRouter.get(
       state: string
     }
     const userRequest = await getUserWithBearerToken(`Bearer ${accessToken}`)
-    const { data: dataTokens } = await axios.post<{
-      access_token: string
-      token_type: string
-      expires_in: number
-      refresh_token: string
-      scope: 'identify'
-    }>(
-      'https://discordapp.com/api/v6/oauth2/token',
-      querystring.stringify({
-        client_id: process.env.DISCORD_CLIENT_ID,
-        client_secret: process.env.DISCORD_CLIENT_SECRET,
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: `${process.env.API_BASE_URL}/users/oauth2/discord/callback-add-strategy?redirectURI=${redirectURI}`,
-        scope: 'identify'
-      }),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
+    const dataUser = await getUserDiscordData(
+      code,
+      `${process.env.API_BASE_URL}/users/oauth2/discord/callback-add-strategy?redirectURI=${redirectURI}`
     )
-
-    const { data: dataUser } = await axios.get<{
-      id: string
-      username: string
-      discriminator: string
-    }>('https://discordapp.com/api/v6/users/@me', {
-      headers: {
-        Authorization: `${dataTokens.token_type} ${dataTokens.access_token}`
-      }
-    })
-
-    let message = 'success'
     const OAuthUser = await OAuth.findOne({
-      where: { providerId: dataUser.id, provider }
+      where: { providerId: dataUser.id, provider: PROVIDER }
     })
+    let message = 'success'
 
     if (OAuthUser != null) {
       if (OAuthUser.userId !== userRequest.current.id) {
@@ -108,15 +120,13 @@ discordRouter.get(
       }
     } else {
       await OAuth.create({
-        provider,
+        provider: PROVIDER,
         providerId: dataUser.id,
         userId: userRequest.current.id
       })
     }
 
-    const url = new URL(redirectURI)
-    url.searchParams.append('message', message)
-    return res.redirect(url.href)
+    return res.redirect(buildQueryURL(redirectURI, { message }))
   }
 )
 
@@ -132,7 +142,7 @@ discordRouter.get(
   (req: Request, res: Response) => {
     const { redirectURI } = req.query as { redirectURI: string }
     const redirectCallback = `${process.env.API_BASE_URL}/users/oauth2/discord/callback?redirectURI=${redirectURI}`
-    const url = `https://discordapp.com/api/v6/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&scope=identify&response_type=code&redirect_uri=${redirectCallback}`
+    const url = `${DISCORD_BASE_URL}/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&scope=identify&response_type=code&redirect_uri=${redirectCallback}`
     return res.json(url)
   }
 )
@@ -152,41 +162,12 @@ discordRouter.get(
       code: string
       redirectURI: string
     }
-    const { data: dataTokens } = await axios.post<{
-      access_token: string
-      token_type: string
-      expires_in: number
-      refresh_token: string
-      scope: 'identify'
-    }>(
-      'https://discordapp.com/api/v6/oauth2/token',
-      querystring.stringify({
-        client_id: process.env.DISCORD_CLIENT_ID,
-        client_secret: process.env.DISCORD_CLIENT_SECRET,
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: `${process.env.API_BASE_URL}/users/oauth2/discord/callback?redirectURI=${redirectURI}`,
-        scope: 'identify'
-      }),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
+    const dataUser = await getUserDiscordData(
+      code,
+      `${process.env.API_BASE_URL}/users/oauth2/discord/callback?redirectURI=${redirectURI}`
     )
-
-    const { data: dataUser } = await axios.get<{
-      id: string
-      username: string
-      discriminator: string
-    }>('https://discordapp.com/api/v6/users/@me', {
-      headers: {
-        Authorization: `${dataTokens.token_type} ${dataTokens.access_token}`
-      }
-    })
-
     const OAuthUser = await OAuth.findOne({
-      where: { providerId: dataUser.id, provider }
+      where: { providerId: dataUser.id, provider: PROVIDER }
     })
     let userId: number = OAuthUser?.user?.id
 
@@ -205,7 +186,7 @@ discordRouter.get(
       const user = await User.create({ name })
       userId = user.id
       await OAuth.create({
-        provider,
+        provider: PROVIDER,
         providerId: dataUser.id,
         userId: user.id
       })
@@ -213,19 +194,21 @@ discordRouter.get(
 
     const accessToken = generateAccessToken({
       id: userId,
-      strategy: provider
+      strategy: PROVIDER
     })
     const refreshToken = await generateRefreshToken({
-      strategy: provider,
+      strategy: PROVIDER,
       id: userId
     })
 
-    const url = new URL(redirectURI)
-    url.searchParams.append('accessToken', accessToken)
-    url.searchParams.append('refreshToken', refreshToken)
-    url.searchParams.append('expiresIn', expiresIn.toString())
-    url.searchParams.append('type', 'Bearer')
-    return res.redirect(url.href)
+    return res.redirect(
+      buildQueryURL(redirectURI, {
+        accessToken,
+        refreshToken,
+        expiresIn: expiresIn.toString(),
+        type: 'Bearer'
+      })
+    )
   }
 )
 
